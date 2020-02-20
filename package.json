@@ -1,6 +1,6 @@
 {
     "name": "io-ts-transformer",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "transforms types to io-ts entities",
     "author": "awerlogus",
     "license": "MIT",
@@ -26,9 +26,9 @@
         "fp"
     ],
     "files": [
-        "transformer.d.ts",
         "transformer.js",
-        "index.ts",
+        "transformer.ts",
+        "index.d.ts",
         "index.js"
     ],
     "devDependencies": {
