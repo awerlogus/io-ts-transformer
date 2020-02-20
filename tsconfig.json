@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "declaration": false,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "experimentalDecorators": true,
+    "noErrorTruncation": true,
+    "noUnusedParameters": true,
+    "target": "es5",
+    "sourceMap": false,
+    "outDir": "./",
+    "baseUrl": "./",
+    "incremental": false,
+    "strict": true
+  },
+  "files": [
+    "transformer.ts"
+  ]
+}

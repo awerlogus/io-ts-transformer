@@ -1,0 +1,48 @@
+{
+    "name": "io-ts-transformer",
+    "version": "1.0.0",
+    "description": "transforms types to io-ts entities",
+    "author": "awerlogus",
+    "license": "MIT",
+    "scripts": {
+        "build": "node ./node_modules/ttypescript/bin/tsc",
+        "prepublishOnly": "npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/awerlogus/io-ts-transformer.git"
+    },
+    "bugs": {
+        "url": "https://github.com/awerlogus/io-ts-transformer/issues"
+    },
+    "homepage": "https://github.com/awerlogus/io-ts-transformer/#readme",
+    "keywords": [
+        "TypeScript",
+        "io-ts",
+        "fp-ts",
+        "ast",
+        "transformer",
+        "functional",
+        "fp"
+    ],
+    "files": [
+        "transformer.d.ts",
+        "transformer.js",
+        "index.ts",
+        "index.js"
+    ],
+    "devDependencies": {
+        "@types/node": "11.13.4",
+        "rimraf": "^2.7.1",
+        "rollup-plugin-commonjs": "^10.1.0",
+        "rollup-plugin-typescript2": "^0.24.3",
+        "tsconfig-paths": "3.8.0",
+        "tslib": "^1.10.0",
+        "ttypescript": "^1.5.10",
+        "typescript": "^3.7.5"
+    },
+    "peerDependencies": {
+        "typescript": ">=3.5.2",
+        "io-ts": "^2.1.1"
+    }
+}
