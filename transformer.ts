@@ -579,10 +579,10 @@ function iteratorToArray<T>(iterator: ts.Iterator<T>): Array<T> {
 
 
 /**
- * Checks is ts.ObjectType being a lambda expression
+ * Checks is ts.Type being a function
  */
 
-function isLambdaExpression(type: ts.ObjectType): boolean {
+function isFunction(type: ts.Type): boolean {
 
   return type.getCallSignatures().length !== 0
 }
@@ -633,10 +633,11 @@ function convertTypeToIoTsType(type: ts.Type, namespace: string, typeChecker: ts
   if (isRecordType(type))
     return convertRecordToIoTs(type, namespace, typeChecker)
 
+  if (isFunction(type))
+    return getPropertyAccess(namespace, 'function')
+
   if (isObjectType(type))
-    if (isLambdaExpression(type))
-      return getPropertyAccess(namespace, 'function')
-    else return convertObjectToIoTs(type.getProperties(), namespace, typeChecker)
+    return convertObjectToIoTs(type.getProperties(), namespace, typeChecker)
 
   // if (type.isClassOrInterface()) {
 
@@ -648,7 +649,7 @@ function convertTypeToIoTsType(type: ts.Type, namespace: string, typeChecker: ts
   //   return convertObjectToIoTs(iteratorToArray(members.values()), namespace, typeChecker)
   // }
 
-  return getPropertyAccess(namespace, 'function')
+  return getPropertyAccess(namespace, 'void')
 }
 
 
