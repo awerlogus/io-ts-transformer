@@ -1,6 +1,6 @@
 {
     "name": "io-ts-transformer",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "description": "transforms types to io-ts entities",
     "author": "awerlogus",
     "license": "MIT",

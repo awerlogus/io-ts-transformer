@@ -6,6 +6,14 @@ TypeScript transformer which converts TypeScript types to io-ts entities
 
 [io-ts](https://github.com/gcanti/io-ts) >= 2.x+
 
+[fp-ts](https://github.com/gcanti/fp-ts) >= 2.0.0
+
+# Installation
+
+To install this package run the following command:
+
+`npm i io-ts-transformer io-ts fp-ts`
+
 # About this project
 
 Io-ts is an awesome library that makes possible runtime type validation in TypeScript.
