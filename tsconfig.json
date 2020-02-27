@@ -4,6 +4,7 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "declaration": false,
+    "downlevelIteration": true,
     "removeComments": true,
     "emitDecoratorMetadata": true,
     "esModuleInterop": true,

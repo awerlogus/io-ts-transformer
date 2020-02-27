@@ -79,14 +79,14 @@ import * as t from 'io-ts'
 t.type({ foo: t.literal('bar'), data: t.string })
 ```
 
+3) Transform recursive types (but generated statements may be excessive now because of union flattens https://github.com/Microsoft/TypeScript/issues/20156). Maybe I'll figure out a way to reduce these statements later.
+
 Io-ts-transformer can't do (yet?)
 ---
 
-1) Transform recursive types. If you will try to do this now, you will get "Stack overflow" error. I hope, recursive types transformation feature will be implemented later. 
+1) Transform classes and interfaces.
 
-2) Transform classes and interfaces.
-
-3) Work with dynamic type parameters, i.e. `buildDecoder<T>()` in the following code will be converted into `t.void` as default io-ts entity:
+2) Work with dynamic type parameters, i.e. `buildDecoder<T>()` in the following code will be converted into `t.void` as default io-ts entity:
 ```typescript
 import { buildDecoder } from 'io-ts-transformer'
 
@@ -95,9 +95,9 @@ function convertEntity<T>(entity: T) {
 }
 ```
 
-4) Emulate `t.Int` and `t.exact` io-ts entities on type level.
+3) Emulate `t.Int` and `t.exact` io-ts entities on type level.
 
-5) Find and throw a compile-time error in cases when buildDecoder is used not as call expression. Now writing something like `buildDecoder.toString()` results in a runtime error. This is not good.
+4) Find and throw a compile-time error in cases when buildDecoder is used not as call expression. Now writing something like `buildDecoder.toString()` results in a runtime error. This is not good.
 
 # How to use `buildDecoder`
 
