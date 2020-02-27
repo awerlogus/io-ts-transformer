@@ -79,7 +79,7 @@ import * as t from 'io-ts'
 t.type({ foo: t.literal('bar'), data: t.string })
 ```
 
-3) Transform recursive types (but generated statements may be excessive now because of union flattens https://github.com/Microsoft/TypeScript/issues/20156). Maybe I'll figure out a way to reduce these statements later.
+3) Transform recursive types
 
 Io-ts-transformer can't do (yet?)
 ---

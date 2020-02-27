@@ -533,7 +533,13 @@ function convertUnionType(
   type: ts.UnionType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
 ): TransformationResult {
 
-  const result = convertTypesArray(type.types, namespace, typeChecker, data)
+  const nodes = type.aliasSymbol?.declarations
+
+  const types = nodes !== undefined
+    ? (nodes[0] as any).type.types.map(typeChecker.getTypeFromTypeNode)
+    : type.types
+
+  const result = convertTypesArray(types, namespace, typeChecker, data)
 
   const nodeResult = getMethodCall(namespace, 'union', [ts.createArrayLiteral(result.nodesResult)])
 
