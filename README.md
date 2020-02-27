@@ -62,6 +62,7 @@ Io-ts-transformer already can:
 - string, boolean and number types
 - arrays, tuples, records, objects and functions
 - type unions and intersections
+- recursive types
 
 2) Compute expressions passed into it.
 
@@ -78,8 +79,6 @@ import * as t from 'io-ts'
 
 t.type({ foo: t.literal('bar'), data: t.string })
 ```
-
-3) Transform recursive types
 
 Io-ts-transformer can't do (yet?)
 ---

@@ -28,6 +28,8 @@ const indexTsPath = getRealPath('index.d.ts')
 
 export default function transform(program: ts.Program): ts.TransformerFactory<ts.SourceFile> {
 
+  let messageShown = false
+
   return (context: ts.TransformationContext) => (file: ts.SourceFile) => {
 
     // If in the file no import of buildDecoder function, don't change it
@@ -54,8 +56,13 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
 
     // Replace all buildDecoder function calls with io-ts
     // type entities and remove all index.js imports
-    console.log(`[io-ts-transformer info]: if you will get any problems using this transformer, please
-    leave an issue on GitHub https://github.com/awerlogus/io-ts-transformer/issues with your types example`)
+    if (!messageShown) {
+
+      console.log(`[io-ts-transformer info]: if you will get any problems using this transformer, please
+      leave an issue on GitHub https://github.com/awerlogus/io-ts-transformer/issues with your types example`)
+
+      messageShown = true
+    }
 
     return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName))
   }
