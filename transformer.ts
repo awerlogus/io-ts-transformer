@@ -745,7 +745,7 @@ function convertObjectType(
 
   if (editableOptionalProps.length !== 0) {
 
-    const res = handlePropList(editableNonOptionalProps, true, newData)
+    const res = handlePropList(editableOptionalProps, true, newData)
 
     newData.recursions = mergeArrays(newData.recursions, getNumberObjectKeys(res.recursions))
 
