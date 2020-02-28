@@ -542,7 +542,7 @@ function convertUnionType(
 
   const nodes = type.aliasSymbol?.declarations
 
-  const types = nodes !== undefined
+  const types = nodes !== undefined && nodes.length !== 0
     ? (nodes[0] as any).type.types.map(typeChecker.getTypeFromTypeNode)
     : type.types
 
@@ -582,7 +582,7 @@ function convertArrayType(
 
   const args = type.typeArguments
 
-  if (args === undefined)
+  if (args === undefined || args.length === 0)
     throw new Error('Array must have type arguments')
 
   const result = convertTypeToIoTs(args[0], namespace, typeChecker, data)
@@ -1002,10 +1002,12 @@ function getNodeVisitor(ioTsInstanceName: string) {
     if (!isFunctionCallExpression(functionName, indexTsPath)(typeChecker)(node))
       return node
 
-    if (node.typeArguments === undefined)
+    const typeArguments = node.typeArguments
+
+    if (typeArguments === undefined || typeArguments.length === 0)
       throw new Error(`Please pass a type argument to the ${functionName} function`)
 
-    const type = typeChecker.getTypeFromTypeNode(node.typeArguments[0])
+    const type = typeChecker.getTypeFromTypeNode(typeArguments[0])
 
     return convertTypeToIoTsType(type, ioTsInstanceName, typeChecker)
   }

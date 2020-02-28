@@ -96,7 +96,7 @@ function convertEntity<T>(entity: T) {
 
 3) Emulate `t.Int` and `t.exact` io-ts entities on type level.
 
-4) Find and throw a compile-time error in cases when buildDecoder is used not as call expression. Now writing something like `buildDecoder.toString()` results in a runtime error. This is not good.
+4) Find and throw a compile-time error in cases when `buildDecoder` is used not as call expression. Now writing something like `buildDecoder.toString()` results in a runtime error. This is not good.
 
 # How to use `buildDecoder`
 

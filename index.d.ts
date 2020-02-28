@@ -4,5 +4,5 @@ export function buildDecoder<A>():
   A extends Array<any>
   ? Type<A, A, unknown>
   : A extends object
-  ? StrictType<keyof A, A, A, unknown>
+  ? StrictType<A, A, A, unknown>
   : Type<A, A, unknown>
