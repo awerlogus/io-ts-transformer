@@ -654,6 +654,13 @@ function convertObjectType(
   if (props.length === 0)
     return { nodeResult: ts.createObjectLiteral([]), recursions: {}, tasks: [] }
 
+  const preparedProps = props.map(prop => {
+
+    const origin = (prop as any).syntheticOrigin
+
+    return origin !== undefined ? origin : prop
+  })
+
   // separate properties by two
   // criteria (readonly, optional)
   // and get four property lists
@@ -662,7 +669,7 @@ function convertObjectType(
   const readonlyProps: Array<ts.Symbol> = []
   const editableProps: Array<ts.Symbol> = []
 
-  props.forEach(prop => {
+  preparedProps.forEach(prop => {
     if (isReadonlyPropertyDeclaration(prop))
       readonlyProps.push(prop)
     else editableProps.push(prop)
@@ -688,11 +695,6 @@ function convertObjectType(
 
   // Extracts property type and name from ts.Symbol
   const extractProperty = (prop: ts.Symbol): { name: string, type: ts.Type } => {
-
-    const origin = (prop as any).syntheticOrigin
-
-    if (origin !== undefined)
-      return extractProperty(origin)
 
     const declaration = prop.valueDeclaration
 
