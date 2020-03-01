@@ -48,7 +48,9 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
 
     const ioTsAliasName = ioTsPriorName ?? findFreeName(file, 'io')
 
-    const replacer = getSingleIndexToIoTsImportReplacer(ioTsAliasName)
+    const replacer = getSingleNodeReplacer(
+      isIndexJsImport, getNamespaceImportDeclaration(ioTsAliasName, 'io-ts')
+    )
 
     const file1 = ioTsPriorName === undefined ? ts.visitEachChild(
       file, node => replacer(node, program), context
@@ -64,7 +66,7 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
       messageShown = true
     }
 
-    return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName))
+    return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName, context))
   }
 }
 
@@ -309,22 +311,22 @@ function getNamespaceImportDeclaration(aliasName: string, namespaceName: string)
 
 /**
  * Returns mapping function that replaces
- * single index.js import with io-ts
- * import with alias name aliasName
+ * single node satisfies the passed predicate
+ * with a replacement node passed
  */
 
-function getSingleIndexToIoTsImportReplacer(aliasName: string): MappingFunction {
+function getSingleNodeReplacer(predicate: NodePredicate, replacement: ts.Node): MappingFunction {
 
   let replaced = false
 
   return (node: any) => {
 
-    if (replaced || !isIndexJsImport(node))
+    if (replaced || !predicate(node))
       return node
 
     replaced = true
 
-    return getNamespaceImportDeclaration(aliasName, 'io-ts')
+    return replacement
   }
 }
 
@@ -397,51 +399,85 @@ function isObjectType(type: ts.Type): type is ts.ObjectType {
 
 
 /**
- * Represents result of type transformation.
- * 'Recursions' property is a record where keys are ids
- * of types contains recursion and values are results of
- * its transformations. They must be represented
- * as constants later. NodeResult is expression that
- * represents value of transformed type (literal or constant
- * reference for recursive type cases). Tasks property
- * contains ids of types must be passed to recursions
- * property higher up the call stack.
+ * Checks is ts.Type being a function
  */
 
-type TransformationResult<T extends ts.Expression = ts.Expression> = {
-  recursions: Record<number, ts.Expression>
-  tasks: number[]
-  nodeResult: T
+function isFunctionType(type: ts.Type): boolean {
+
+  return type.getCallSignatures().length !== 0
 }
+
+
+/**
+ * Checks is ts.Type being a type alias
+ */
+
+function isNamedType(type: ts.Type): boolean {
+
+  if (type.isClassOrInterface())
+    return true
+
+  const node = type.aliasSymbol?.declarations[0]
+
+  return node !== undefined && (ts.isTypeAliasDeclaration(node))
+}
+
+
+/**
+ * Represents result of transformation.
+ *
+ * Aliases property is a record where keys are ids
+ * of types that must be represented as constants later,
+ * and values are expressions must be assigned to these constants.
+ * NodesCount property is a record contains count of types converted.
+ * Recursions property is a list of recursive types.
+ */
+
+type TransformationResult = {
+  aliases: Record<number, ts.Expression>
+  nodesCount: Record<number, number>
+  recursions: number[]
+}
+
+
+/**
+ * Represents result of type transformation.
+ *
+ * NodeResult is expression that represents value
+ * of transformed type (literal or constant
+ * reference for recursive type cases).
+ */
+
+type TypeTransformationResult<T extends ts.Expression = ts.Expression> =
+
+  TransformationResult & { nodeResult: T }
 
 
 /**
  * Represents result of types array transformation.
- * 'Recursions' property is a record where keys are ids
- * of types contains recursion and values are results of
- * its transformations. They must be represented
- * as constants later. NodesResult is array of expressions that
- * represents values of transformed types (literal or constant
- * references for recursive type cases). Tasks property
- * contains ids of types must be passed to recursions
- * property higher up the call stack.
+ *
+ * NodesResult is array of expressions that represents
+ * values of transformed types (literal or constant
+ * references for recursive type cases).
  */
 
-type TypeArrayTransformationResult<T extends ts.Expression = ts.Expression> = {
-  recursions: Record<number, ts.Expression>
-  tasks: number[],
-  nodesResult: T[]
-}
+type TypeArrayTransformationResult<T extends ts.Expression = ts.Expression> =
+
+  TransformationResult & { nodesResult: T[] }
+
 
 /**
- * Stack represents list of type ids of current call stack.
- * Recursions prop contains list of recursive type ids that were
- * already computed and may be replaced with constant reference.
+ * Represents data necessary to transform node
+ *
+ * Stack property contains stack of type ids
+ * of current transformation call stack.
+ * Computed property contains array of type ids
+ * that may be replaced by constant
  */
 
 type TransformationData = {
   stack: number[]
-  recursions: number[]
+  computed: number[]
 }
 
 
@@ -476,69 +512,86 @@ function mergeObjects<K extends string | number, V>(obj1: Record<K, V>, obj2: Re
 
 
 /**
+ * Merges two number objects. Result
+ * object value is sum of these objects values
+ */
+
+function mergeNumberObjects(obj1: Record<number, number>, obj2: Record<number, number>): Record<number, number> {
+
+  const result = { ...obj1 }
+
+  const keys = getObjectNumberKeys(obj2)
+
+  keys.forEach(key => result[key] = (obj1[key] ?? 0) + obj2[key])
+
+  return result
+}
+
+
+/**
  * Returns keys of object where keys are numbers
  */
 
-function getNumberObjectKeys<T>(object: Record<number, T>): number[] {
+function getObjectNumberKeys(object: Record<number, unknown>): number[] {
 
+  // Don't make parseInt call point-free
   return Object.keys(object).map(num => parseInt(num))
 }
 
 
 /**
- * Converts an array of types to io-ts entities
- * every next type transformation of array knows
- * about previous transformation results.
- * Especially it knows about ids of other
- * recursive types that were transformed during
- * transforming previous array elements and so it
- * should be just replaced by constant reference
+ * Converts array of TypeTransformationResult to TypeArrayTransformationResult
+ */
+
+function mergeTypeTransformationResultArray(array: TypeTransformationResult[]): TypeArrayTransformationResult {
+
+  const aliases = array.map(res => res.aliases).reduce(mergeObjects, {})
+
+  const recursions = array.map(res => res.recursions).reduce(mergeArrays, [])
+
+  const nodesCount = array.map(res => res.nodesCount).reduce(mergeNumberObjects, {})
+
+  const nodesResult = array.map(res => res.nodeResult)
+
+  return { nodesResult, aliases, recursions, nodesCount }
+}
+
+
+/**
+ * Converts an array of types to TypeArrayTransformationResult
  */
 
 function convertTypesArray(
   types: readonly ts.Type[], namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
 ): TypeArrayTransformationResult {
 
-  const convertNextType = (
-    types: readonly ts.Type[], data: TransformationData, result: TransformationResult[]
-  ): TransformationResult[] => {
+  const transformNextType = (
+    types: readonly ts.Type[], data: TransformationData, result: TypeTransformationResult[]
+  ): TypeTransformationResult[] => {
+
+    if (types.length === 0)
+      return result
 
     const [head, ...tail] = types
 
     const res = convertTypeToIoTs(head, namespace, typeChecker, data)
 
-    const recursionIds = mergeArrays(data.recursions, getNumberObjectKeys(res.recursions))
+    const computed = mergeArrays(data.computed, getObjectNumberKeys(res.nodesCount))
 
-    const newResult = [...result, res]
-
-    if (tail.length === 0)
-      return newResult
-
-    return convertNextType(tail, {
-      recursions: mergeArrays(recursionIds, res.tasks),
-      stack: data.stack
-    }, newResult)
+    return transformNextType(tail, { ...data, computed }, [...result, res])
   }
 
-  const result = convertNextType(types, data, [])
-
-  const tasks = result.map(res => res.tasks).reduce(mergeArrays)
-
-  const recursions = result.map(res => res.recursions).reduce(mergeObjects)
-
-  const nodesResult = result.map(res => res.nodeResult)
-
-  return { nodesResult, recursions, tasks }
+  return mergeTypeTransformationResultArray(transformNextType(types, data, []))
 }
 
 
 /**
- * Converts ts.UnionType to io-ts TransformationResult
+ * Converts ts.UnionType to TypeTransformationResult
  */
 
 function convertUnionType(
   type: ts.UnionType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   const nodes = type.aliasSymbol?.declarations
 
@@ -555,12 +608,12 @@ function convertUnionType(
 
 
 /**
- * Converts ts.TupleType to io-ts TransformationResult
+ * Converts ts.TupleType to TypeTransformationResult
  */
 
 function convertTupleType(
   type: ts.TupleType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   const result = convertTypesArray((type as any).resolvedTypeArguments, namespace, typeChecker, data)
 
@@ -576,7 +629,7 @@ function convertTupleType(
 
 function convertArrayType(
   type: ts.GenericType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   const arrayType = type.getSymbol()?.escapedName === 'ReadonlyArray' ? 'readonlyArray' : 'array'
 
@@ -599,7 +652,7 @@ function convertArrayType(
 
 function convertRecordType(
   type: ts.GenericType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   const args = type.aliasTypeArguments
 
@@ -642,6 +695,24 @@ function isReadonlyPropertyDeclaration(prop: ts.Symbol): boolean {
 
 
 /**
+ * Extracts property type and name from ts.Symbol
+ */
+
+function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: string, type: ts.Type } {
+
+  const declaration = prop.valueDeclaration
+
+  const type = (declaration !== undefined)
+    ? typeChecker.getTypeFromTypeNode((declaration as any).type)
+    : (prop as any).type
+
+  const name = String(prop.escapedName)
+
+  return { name, type }
+}
+
+
+/**
  * Converts Array of object properties to io-ts TransformationResult. If there are
  * readonly or optional properties, they will be built as separate
  * objects and mixed to main object using t.intersection function
@@ -649,10 +720,10 @@ function isReadonlyPropertyDeclaration(prop: ts.Symbol): boolean {
 
 function convertObjectType(
   props: ts.Symbol[], namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   if (props.length === 0)
-    return { nodeResult: ts.createObjectLiteral([]), recursions: {}, tasks: [] }
+    return wrapToTypeTransformationResult(ts.createObjectLiteral([]))
 
   const preparedProps = props.map(prop => {
 
@@ -693,24 +764,10 @@ function convertObjectType(
     else editableNonOptionalProps.push(prop)
   })
 
-  // Extracts property type and name from ts.Symbol
-  const extractProperty = (prop: ts.Symbol): { name: string, type: ts.Type } => {
-
-    const declaration = prop.valueDeclaration
-
-    const type = (declaration !== undefined)
-      ? typeChecker.getTypeFromTypeNode((declaration as any).type)
-      : (prop as any).type
-
-    const name = String(prop.escapedName)
-
-    return { name, type }
-  }
-
   // Builds io-ts t.type (or t.partial) entity by property list
   const handlePropList = (props: ts.Symbol[], isPartial: boolean, data: TransformationData) => {
 
-    const handledProps = props.map(extractProperty)
+    const handledProps = props.map(prop => extractProperty(prop, typeChecker))
 
     const types = handledProps.map(prop => prop.type)
 
@@ -728,43 +785,48 @@ function convertObjectType(
   // Build 4 (or less) objects for each
   // (+-readonly and +-optional) case
   // and add it to the result array
-  const result: TransformationResult[] = []
+  const result: TypeTransformationResult[] = []
 
-  const newData = data
+  const handleReadonlyProps = (props: ts.Symbol[], isPartial: boolean, data: TransformationData) => {
 
-  if (readonlyOptionalProps.length !== 0) {
-
-    const res = handlePropList(readonlyOptionalProps, true, newData)
-
-    newData.recursions = mergeArrays(newData.recursions, getNumberObjectKeys(res.recursions))
-
-    newData.recursions = mergeArrays(newData.recursions, res.tasks)
+    const res = handlePropList(props, isPartial, data)
 
     const nodeResult = getMethodCall(namespace, 'readonly', [res.nodeResult])
 
-    result.push({ ...res, nodeResult })
+    return { ...res, nodeResult }
+  }
+
+  let newData = data
+
+  if (readonlyOptionalProps.length !== 0) {
+
+    const res = handleReadonlyProps(readonlyOptionalProps, true, newData)
+
+    const computed = mergeArrays(newData.computed, getObjectNumberKeys(res.nodesCount))
+
+    newData = { ...data, computed }
+
+    result.push(res)
   }
 
   if (readonlyNonOptionalProps.length !== 0) {
 
-    const res = handlePropList(readonlyNonOptionalProps, false, newData)
+    const res = handleReadonlyProps(readonlyNonOptionalProps, false, newData)
 
-    newData.recursions = mergeArrays(newData.recursions, getNumberObjectKeys(res.recursions))
+    const computed = mergeArrays(newData.computed, getObjectNumberKeys(res.nodesCount))
 
-    newData.recursions = mergeArrays(newData.recursions, res.tasks)
+    newData = { ...data, computed }
 
-    const nodeResult = getMethodCall(namespace, 'readonly', [res.nodeResult])
-
-    result.push({ ...res, nodeResult })
+    result.push(res)
   }
 
   if (editableOptionalProps.length !== 0) {
 
     const res = handlePropList(editableOptionalProps, true, newData)
 
-    newData.recursions = mergeArrays(newData.recursions, getNumberObjectKeys(res.recursions))
+    const computed = mergeArrays(newData.computed, getObjectNumberKeys(res.nodesCount))
 
-    newData.recursions = mergeArrays(newData.recursions, res.tasks)
+    newData = { ...data, computed }
 
     result.push(res)
   }
@@ -772,27 +834,23 @@ function convertObjectType(
   if (editableNonOptionalProps.length !== 0)
     result.push(handlePropList(editableNonOptionalProps, false, newData))
 
-  const recursions = result.map(res => res.recursions).reduce(mergeObjects)
+  const merged = mergeTypeTransformationResultArray(result)
 
-  const tasks = result.map(res => res.tasks).reduce(mergeArrays)
+  const nodeResult = result.length === 1
+    ? result[0].nodeResult
+    : getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(merged.nodesResult)])
 
-  const nodeResult = result.length !== 1
-    ? getMethodCall(namespace, 'intersection', [
-      ts.createArrayLiteral(result.map(res => res.nodeResult))
-    ])
-    : result[0].nodeResult
-
-  return { recursions, tasks, nodeResult }
+  return { ...merged, nodeResult }
 }
 
 
 /**
- * Checks is ts.Type being a function
+ * Wraps ts.Expression to TypeTransformationResult
  */
 
-function isFunction(type: ts.Type): boolean {
+function wrapToTypeTransformationResult(node: ts.Expression): TypeTransformationResult {
 
-  return type.getCallSignatures().length !== 0
+  return { nodeResult: node, nodesCount: {}, recursions: [], aliases: {} }
 }
 
 
@@ -800,11 +858,9 @@ function isFunction(type: ts.Type): boolean {
  * Builds TransformationResult for literal cases
  */
 
-function getLiteralTransformationResult(namespace: string, literal: ts.Expression): TransformationResult {
+function getLiteralTransformationResult(namespace: string, literal: ts.Expression): TypeTransformationResult {
 
-  const model = getMethodCall(namespace, 'literal', [literal])
-
-  return { nodeResult: model, recursions: {}, tasks: [] }
+  return wrapToTypeTransformationResult(getMethodCall(namespace, 'literal', [literal]))
 }
 
 
@@ -812,19 +868,19 @@ function getLiteralTransformationResult(namespace: string, literal: ts.Expressio
  * Builds TransformationResult for basic type cases
  */
 
-function getBasicTypeTransformationResult(namespace: string, typeName: string): TransformationResult {
+function getBasicTypeTransformationResult(namespace: string, typeName: string): TypeTransformationResult {
 
-  return { nodeResult: getPropertyAccess(namespace, typeName), recursions: {}, tasks: [] }
+  return wrapToTypeTransformationResult(getPropertyAccess(namespace, typeName))
 }
 
 
 /**
- * Converts ts.Type entity to io-ts TransformationResult
+ * Converts ts.Type entity to TypeTransformationResult
  */
 
 function convertTypeToIoTs(
   type: ts.Type, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
-): TransformationResult {
+): TypeTransformationResult {
 
   const stringType = typeChecker.typeToString(type)
 
@@ -835,7 +891,7 @@ function convertTypeToIoTs(
   if (type.isClassOrInterface())
     throw new Error('Transformation of classes interfaces is not supported now')
 
-  // Non recursive types
+  // Basic types transformation
   if (['null', 'undefined', 'void', 'unknown'].includes(stringType))
     return getBasicTypeTransformationResult(namespace, stringType)
 
@@ -855,25 +911,29 @@ function convertTypeToIoTs(
   if (['string', 'number', 'boolean'].includes(stringType))
     return getBasicTypeTransformationResult(namespace, stringType)
 
-  if (isFunction(type))
+  if (isFunctionType(type))
     return getBasicTypeTransformationResult(namespace, 'function')
 
-  // Checking for the stack loop
+  // Checking is the type already computed
   const typeId = getTypeId(type)
 
-  const recursionsIncludes = data.recursions.includes(typeId)
+  const isNamed = isNamedType(type)
 
-  if (recursionsIncludes || data.stack.includes(typeId))
+  if (isNamed && data.computed.includes(typeId))
     return {
       nodeResult: ts.createIdentifier(generateNodeName(typeId)),
-      tasks: recursionsIncludes ? [] : [typeId],
-      recursions: {},
+      aliases: {},
+      nodesCount: { [typeId]: 1 },
+      recursions: data.stack.includes(typeId) ? data.stack.slice(data.stack.indexOf(typeId)) : []
     }
 
-  // Recursive types
-  const newData = { ...data, stack: [...data.stack, typeId] }
+  // Complex types transformation
+  const newData: TransformationData = {
+    computed: mergeArrays(data.computed, [typeId]),
+    stack: [...data.stack, typeId]
+  }
 
-  let result: TransformationResult
+  let result: TypeTransformationResult
 
   if (type.isUnion())
     result = convertUnionType(type, namespace, typeChecker, newData)
@@ -892,18 +952,17 @@ function convertTypeToIoTs(
 
   else result = getBasicTypeTransformationResult(namespace, 'void')
 
-  // Check if we need to enrich recursions property with this type
-  const hasTask = result.tasks.includes(typeId)
+  // Check if we need to enrich aliases property with this type
+  const nodeResult = isNamed ? ts.createIdentifier(generateNodeName(typeId)) : result.nodeResult
 
-  const nodeResult = hasTask ? ts.createIdentifier(generateNodeName(typeId)) : result.nodeResult
+  const newAlias = isNamed ? { [typeId]: result.nodeResult } : {}
 
-  const newRecursion = hasTask ? { [typeId]: result.nodeResult } : {}
+  const aliases = [result.aliases, newAlias].reduce(mergeObjects)
 
-  const recursions = [result.recursions, newRecursion].reduce(mergeObjects)
+  // Increase nodesCount by 1 for this type id
+  const nodesCount = mergeNumberObjects(result.nodesCount, { [typeId]: 1 })
 
-  const tasks = hasTask ? result.tasks.filter(id => id !== typeId) : result.tasks
-
-  return { nodeResult, recursions, tasks }
+  return { ...result, nodeResult, aliases, nodesCount }
 }
 
 
@@ -961,23 +1020,96 @@ function generateNodeName(id: number): string {
 
 
 /**
+ * Returns id of node being the type constant
+ */
+
+function getTypeConstantId(constant: ts.Identifier): number {
+
+  const name = constant.text
+
+  return parseInt(name.replace('node', ''))
+}
+
+
+/**
+ * Embeds constant expressions that was used only once
+ */
+
+function addConstantsOptimization(
+  data: TypeTransformationResult, program: ts.Program, context: ts.TransformationContext
+): TypeTransformationResult {
+
+  const aliasKeys = getObjectNumberKeys(data.aliases)
+
+  const embeddingIds = aliasKeys.filter(key => data.nodesCount[key] === 1)
+
+  const transformed: Record<number, ts.Expression> = {}
+
+  const mappingFunction: MappingFunction = (node: any) => {
+
+    if (!ts.isIdentifier(node))
+      return node
+
+    const id = getTypeConstantId(node)
+
+    if (embeddingIds.includes(id))
+      return transformed[id] ?? data.aliases[id]
+
+    return node
+  }
+
+  aliasKeys.forEach(key => transformed[key] = mapNodeAndChildren(data.aliases[key], program, context, mappingFunction) as ts.Expression)
+
+  const nodeResult = mapNodeAndChildren(data.nodeResult, program, context, mappingFunction) as ts.Expression
+
+  const aliases: Record<number, ts.Expression> = {}
+
+  aliasKeys.forEach(key => { if (!embeddingIds.includes(key)) aliases[key] = transformed[key] })
+
+  return { ...data, nodeResult, aliases }
+}
+
+
+/**
+ * Adds additional optimizations for built io-ts expressions
+ */
+
+function addPostOptimizations(
+  data: TypeTransformationResult, program: ts.Program, context: ts.TransformationContext
+): TypeTransformationResult {
+
+  const constantsOptimized = addConstantsOptimization(data, program, context)
+
+  return constantsOptimized
+}
+
+
+/**
  * Converts ts.Type entity to io-ts type entity
  */
 
-function convertTypeToIoTsType(type: ts.Type, namespace: string, typeChecker: ts.TypeChecker): ts.Expression {
+function convertTypeToIoTsType(
+  type: ts.Type, namespace: string, typeChecker: ts.TypeChecker, program: ts.Program, context: ts.TransformationContext
+): ts.Expression {
 
-  const initialData: TransformationData = { recursions: [], stack: [] }
+  const initialData: TransformationData = { computed: [], stack: [] }
 
   const data = convertTypeToIoTs(type, namespace, typeChecker, initialData)
 
-  const { recursions, nodeResult } = data
+  const result = addPostOptimizations(data, program, context)
 
-  const ids = getNumberObjectKeys(recursions)
+  const { aliases, nodeResult } = result
+
+  const ids = getObjectNumberKeys(aliases)
 
   if (ids.length === 0)
     return nodeResult
 
-  const constants = ids.map(id => getRecursiveTypeModel(namespace, generateNodeName(id), recursions[id]))
+  const constants = ids.map(
+    id => result.recursions.includes(id)
+      ? getRecursiveTypeModel(namespace, generateNodeName(id), aliases[id])
+      : createConstant(generateNodeName(id), aliases[id])
+  )
 
   const iifeBlock = ts.createBlock([...constants, ts.createReturn(nodeResult)], true)
 
@@ -990,9 +1122,9 @@ function convertTypeToIoTsType(type: ts.Type, namespace: string, typeChecker: ts
  * buildDecoder function call with io-ts type entity
  */
 
-function getNodeVisitor(ioTsInstanceName: string): MappingFunction
+function getNodeVisitor(ioTsInstanceName: string, context: ts.TransformationContext): MappingFunction
 
-function getNodeVisitor(ioTsInstanceName: string) {
+function getNodeVisitor(ioTsInstanceName: string, context: ts.TransformationContext) {
 
   return (node: ts.Node, program: ts.Program) => {
 
@@ -1011,6 +1143,6 @@ function getNodeVisitor(ioTsInstanceName: string) {
 
     const type = typeChecker.getTypeFromTypeNode(typeArguments[0])
 
-    return convertTypeToIoTsType(type, ioTsInstanceName, typeChecker)
+    return convertTypeToIoTsType(type, ioTsInstanceName, typeChecker, program, context)
   }
 }
