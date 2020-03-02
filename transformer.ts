@@ -283,10 +283,18 @@ function getNamespaceImportAliasName(node: ts.ImportDeclaration): string | undef
 
 function getIoTsAliasName(file: ts.SourceFile): string | undefined {
 
-  return getDirectChildren(file)
+  const name = getDirectChildren(file)
     .filter(isIoTsImport)
     .map(getNamespaceImportAliasName)
     .find(Boolean)
+
+  // if io-ts import is unused in code, it will be
+  // removed by compiler and cannot be used by us
+  return someOfNodeOrChildren(
+    node => ts.isIdentifier(node) &&
+      !ts.isNamespaceImport(node.parent) &&
+      node.getText() === name
+  )(file) ? name : undefined
 }
 
 
