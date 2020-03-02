@@ -540,10 +540,10 @@ function getObjectNumberKeys(object: Record<number, unknown>): number[] {
 
 
 /**
- * Converts array of TypeTransformationResult to TypeArrayTransformationResult
+ * Merges array of TransformationResult to single TransformationResult
  */
 
-function mergeTypeTransformationResultArray(array: TypeTransformationResult[]): TypeArrayTransformationResult {
+function mergeTransformationResultArray(array: TransformationResult[]): TransformationResult {
 
   const aliases = array.map(res => res.aliases).reduce(mergeObjects, {})
 
@@ -551,9 +551,19 @@ function mergeTypeTransformationResultArray(array: TypeTransformationResult[]): 
 
   const nodesCount = array.map(res => res.nodesCount).reduce(mergeNumberObjects, {})
 
+  return { aliases, recursions, nodesCount }
+}
+
+
+/**
+ * Converts array of TypeTransformationResult to TypeArrayTransformationResult
+ */
+
+function mergeTypeTransformationResultArray(array: TypeTransformationResult[]): TypeArrayTransformationResult {
+
   const nodesResult = array.map(res => res.nodeResult)
 
-  return { nodesResult, aliases, recursions, nodesCount }
+  return { nodesResult, ...mergeTransformationResultArray(array) }
 }
 
 
@@ -624,7 +634,7 @@ function convertTupleType(
 
 
 /**
- * Converts Array or ReadonlyArray types to io-ts TransformationResult
+ * Converts Array or ReadonlyArray types TypeTransformationResult
  */
 
 function convertArrayType(
@@ -647,7 +657,7 @@ function convertArrayType(
 
 
 /**
- * Converts Record type to to io-ts TransformationResult
+ * Converts Record type to to TypeTransformationResult
  */
 
 function convertRecordType(
@@ -713,6 +723,21 @@ function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: 
 
 
 /**
+ * Builds name for property.
+ * If it is simple, use just string.
+ * For complex names wrap it into ts.StringLiteral
+ */
+
+function buildPropertyName(name: string): string | ts.StringLiteral {
+
+  if (name.match(/(\d*\w_)+/))
+    return ts.createStringLiteral(name)
+
+  return name
+}
+
+
+/**
  * Converts Array of object properties to io-ts TransformationResult. If there are
  * readonly or optional properties, they will be built as separate
  * objects and mixed to main object using t.intersection function
@@ -723,7 +748,7 @@ function convertObjectType(
 ): TypeTransformationResult {
 
   if (props.length === 0)
-    return wrapToTypeTransformationResult(ts.createObjectLiteral([]))
+    return wrapToTypeTransformationResult(getMethodCall(namespace, 'type', [ts.createObjectLiteral([])]))
 
   const preparedProps = props.map(prop => {
 
@@ -773,7 +798,9 @@ function convertObjectType(
 
     const result = convertTypesArray(types, namespace, typeChecker, data)
 
-    const properties = result.nodesResult.map((p, i) => ts.createPropertyAssignment(handledProps[i].name, p))
+    const properties = result.nodesResult.map(
+      (p, i) => ts.createPropertyAssignment(buildPropertyName(handledProps[i].name), p)
+    )
 
     const objectType = isPartial ? 'partial' : 'type'
 
@@ -845,6 +872,41 @@ function convertObjectType(
 
 
 /**
+ * Converts interface type to to TypeTransformationResult
+ */
+
+function convertInterfaceType(
+  type: ts.InterfaceType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
+): TypeTransformationResult {
+
+  const props = (type as any).declaredProperties ?? []
+
+  const object = convertObjectType(props, namespace, typeChecker, data)
+
+  const parents = type.symbol.declarations
+    .map((d: any) => d.heritageClauses)
+    .filter(Boolean)
+    .reduce(mergeArrays, [])
+    .map((clause: any) => clause.types)
+    .reduce(mergeArrays, [])
+    .map(typeChecker.getTypeFromTypeNode)
+
+  if (parents.length === 0)
+    return object
+
+  const newData = { ...data, computed: mergeArrays(data.computed, getObjectNumberKeys(object.nodesCount)) }
+
+  const parentsTransformed = convertTypesArray(parents, namespace, typeChecker, newData)
+
+  const nodesArray = [object.nodeResult, ...parentsTransformed.nodesResult]
+
+  const nodeResult = getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(nodesArray)])
+
+  return { nodeResult, ...mergeTransformationResultArray([object, parentsTransformed]) }
+}
+
+
+/**
  * Wraps ts.Expression to TypeTransformationResult
  */
 
@@ -888,8 +950,8 @@ function convertTypeToIoTs(
   if (stringType === 'never')
     throw new Error('Never type transformation is not supported')
 
-  if (type.isClassOrInterface())
-    throw new Error('Transformation of classes interfaces is not supported now')
+  if (type.isClass())
+    throw new Error('Transformation of classes is not supported')
 
   // Basic types transformation
   if (['null', 'undefined', 'void', 'unknown'].includes(stringType))
@@ -946,6 +1008,9 @@ function convertTypeToIoTs(
 
   else if (isRecordType(type))
     result = convertRecordType(type, namespace, typeChecker, newData)
+
+  else if (type.isClassOrInterface())
+    result = convertInterfaceType(type, namespace, typeChecker, newData)
 
   else if (isObjectType(type))
     result = convertObjectType(type.getProperties(), namespace, typeChecker, newData)
@@ -1071,6 +1136,160 @@ function addConstantsOptimization(
 
 
 /**
+ * Returns namespace of node if this node is intersection
+ */
+
+function getIntersectionNodeNamespace(node: ts.Node): string | undefined {
+
+  if (!ts.isCallExpression(node))
+    return undefined
+
+  const expression: any = node.expression
+
+  const method = expression.name.escapedText
+
+  if (method !== 'intersection')
+    return undefined
+
+  return expression.expression.escapedText
+}
+
+
+/**
+ * Flats nested intersections
+ */
+
+function addNestedIntersectionsOptimization(
+  data: TypeTransformationResult, program: ts.Program, context: ts.TransformationContext
+): TypeTransformationResult {
+
+  const aliasKeys = getObjectNumberKeys(data.aliases)
+
+  const transformed: Record<number, ts.Expression> = {}
+
+  const mappingFunction: MappingFunction = (node: any) => {
+
+    const namespace = getIntersectionNodeNamespace(node)
+
+    if (namespace === undefined)
+      return node
+
+    const elementList = (node.arguments[0] as any).elements.map((element: any) => {
+
+      if (getIntersectionNodeNamespace(element) !== undefined)
+        return (element.arguments[0] as any).elements
+
+      return element
+    })
+
+    const elements = elementList.reduce(
+      (acc: Array<ts.Node>, element: Array<ts.Node> | ts.Node) =>
+        Array.isArray(element) ? [...acc, ...element] : [...acc, element], []
+    )
+
+    return getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(elements)])
+  }
+
+  aliasKeys.forEach(key => transformed[key] = mapNodeAndChildren(data.aliases[key], program, context, mappingFunction) as ts.Expression)
+
+  const nodeResult = mapNodeAndChildren(data.nodeResult, program, context, mappingFunction) as ts.Expression
+
+  return { ...data, aliases: transformed, nodeResult }
+}
+
+
+/**
+ * Merges elements of intersection with the same type
+ */
+
+function addMergingIntersectionElementsOptimization(
+  data: TypeTransformationResult, program: ts.Program, context: ts.TransformationContext
+): TypeTransformationResult {
+
+  const aliasKeys = getObjectNumberKeys(data.aliases)
+
+  const transformed: Record<number, ts.Expression> = {}
+
+  const mappingFunction: MappingFunction = (node: any) => {
+
+    const namespace = getIntersectionNodeNamespace(node)
+
+    if (namespace === undefined)
+      return node
+
+    const elements = (node.arguments[0] as any).elements
+
+    const readonlyPartialProps: Array<any> = []
+    const readonlyNonPartialProps: Array<any> = []
+    const partialProps: Array<any> = []
+    const nonPartialProps: Array<any> = []
+    const otherNodes: Array<any> = []
+
+    elements.forEach((element: any) => {
+
+      const name = element?.expression?.name?.escapedText
+
+      if (name === 'readonly') {
+
+        const argument = element.arguments[0]
+
+        const argumentName = argument.expression.name.escapedText
+
+        if (argumentName === 'type')
+          readonlyNonPartialProps.push(argument.arguments[0])
+        else readonlyPartialProps.push(argument.arguments[0])
+      }
+
+      else if (name === 'type')
+        nonPartialProps.push(element.arguments[0])
+
+      else if (name === 'partial')
+        partialProps.push(element.arguments[0])
+
+      else otherNodes.push(element)
+    })
+
+    const readonlyPartial = readonlyPartialProps.map(node => node.properties).reduce(mergeArrays, [])
+    const readonlyNonPartial = readonlyNonPartialProps.map(node => node.properties).reduce(mergeArrays, [])
+    const partial = partialProps.map(node => node.properties).reduce(mergeArrays, [])
+    const nonPartial = nonPartialProps.map(node => node.properties).reduce(mergeArrays, [])
+
+    const result = otherNodes.length !== 0 ? [...otherNodes] : []
+
+    const createReadonly = (object: ts.Expression) => getMethodCall(namespace, 'readonly', [object])
+    const createPartial = (object: ts.Expression) => getMethodCall(namespace, 'partial', [object])
+    const createType = (object: ts.Expression) => getMethodCall(namespace, 'type', [object])
+
+    if (readonlyPartial.length !== 0)
+      result.push(createReadonly(createPartial(ts.createObjectLiteral(readonlyPartial))))
+
+    if (readonlyNonPartial.length !== 0)
+      result.push((createReadonly(createType(ts.createObjectLiteral(readonlyNonPartial)))))
+
+    if (partial.length !== 0)
+      result.push((createPartial(ts.createObjectLiteral(partial))))
+
+    if (nonPartial.length !== 0)
+      result.push(createType(ts.createObjectLiteral(nonPartial)))
+
+    if (result.length === 0)
+      return createType(ts.createObjectLiteral())
+
+    if (result.length === 1)
+      return result[0]
+
+    return getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(result as any)])
+  }
+
+  aliasKeys.forEach(key => transformed[key] = mapNodeAndChildren(data.aliases[key], program, context, mappingFunction) as ts.Expression)
+
+  const nodeResult = mapNodeAndChildren(data.nodeResult, program, context, mappingFunction) as ts.Expression
+
+  return { ...data, aliases: transformed, nodeResult }
+}
+
+
+/**
  * Adds additional optimizations for built io-ts expressions
  */
 
@@ -1080,7 +1299,11 @@ function addPostOptimizations(
 
   const constantsOptimized = addConstantsOptimization(data, program, context)
 
-  return constantsOptimized
+  const intersectionsFlat = addNestedIntersectionsOptimization(constantsOptimized, program, context)
+
+  const intersectionElementsMerged = addMergingIntersectionElementsOptimization(intersectionsFlat, program, context)
+
+  return intersectionElementsMerged
 }
 
 

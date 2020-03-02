@@ -62,7 +62,7 @@ Io-ts-transformer already can:
 - string, boolean and number types
 - arrays, tuples, records, objects and functions
 - type unions and intersections
-- recursive types
+- interfaces and recursive types
 
 2) Compute expressions passed into it.
 
@@ -83,7 +83,7 @@ t.type({ foo: t.literal('bar'), data: t.string })
 Io-ts-transformer can't do (yet?)
 ---
 
-1) Transform classes and interfaces.
+1) Transform classes.
 
 2) Work with dynamic type parameters, i.e. `buildDecoder<T>()` in the following code will be converted into `t.void` as default io-ts entity:
 ```typescript
