@@ -8,10 +8,14 @@ import * as path from 'path'
 const functionName = 'buildDecoder'
 
 // io-ts import paths
-const ioTsLibJsPath = getRealPath('node_modules/io-ts/lib/index.js')
-const ioTsEsJsPath = getRealPath('node_modules/io-ts/es6/index.js')
+const ioTsLibJsPath = getRealPath('../io-ts/lib/index.js')
+const ioTsEsJsPath = getRealPath('../io-ts/es6/index.js')
+const ioTsLibJsDevPath = getRealPath('node_modules/io-ts/es6/index.js')
+const ioTsEsJsDevPath = getRealPath('node_modules/io-ts/lib/index.js')
 
-const isIoTsImport = isImportDeclarationWithOneOfPaths([ioTsEsJsPath, ioTsLibJsPath])
+const isIoTsImport = isImportDeclarationWithOneOfPaths([
+  ioTsLibJsDevPath, ioTsEsJsDevPath, ioTsLibJsPath, ioTsEsJsPath,
+])
 
 // buildDecoder function location path
 const indexJsPath = getRealPath('index.js')
