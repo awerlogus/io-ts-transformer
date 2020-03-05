@@ -8,14 +8,14 @@ import * as path from 'path'
 const functionName = 'buildDecoder'
 
 // io-ts import paths
-const ioTsLibJsPath = getRealPath('../io-ts/lib/index.js')
-const ioTsEsJsPath = getRealPath('../io-ts/es6/index.js')
-const ioTsLibJsDevPath = getRealPath('node_modules/io-ts/es6/index.js')
-const ioTsEsJsDevPath = getRealPath('node_modules/io-ts/lib/index.js')
+const ioTsPaths = [
+  getRealPath('../io-ts/lib/index.js'),
+  getRealPath('../io-ts/es6/index.js'),
+  getRealPath('node_modules/io-ts/es6/index.js'),
+  getRealPath('node_modules/io-ts/lib/index.js')
+]
 
-const isIoTsImport = isImportDeclarationWithOneOfPaths([
-  ioTsLibJsDevPath, ioTsEsJsDevPath, ioTsLibJsPath, ioTsEsJsPath,
-])
+const isIoTsImport = isImportDeclarationWithOneOfPaths(ioTsPaths)
 
 // buildDecoder function location path
 const indexJsPath = getRealPath('index.js')
@@ -32,7 +32,8 @@ const indexTsPath = getRealPath('index.d.ts')
 
 export default function transform(program: ts.Program): ts.TransformerFactory<ts.SourceFile> {
 
-  let messageShown = false
+  console.log(`[io-ts-transformer info]: If you will get any problems using this transformer, please
+  leave an issue on GitHub https://github.com/awerlogus/io-ts-transformer/issues with your types example`)
 
   return (context: ts.TransformationContext) => (file: ts.SourceFile) => {
 
@@ -41,6 +42,14 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
       return file
 
     const typeChecker = program.getTypeChecker()
+
+    // Check if buildDecoder function is used not as a call expression
+    if (someOfNodeOrChildren(isWrongTransformFunctionUsage(typeChecker, functionName, indexTsPath))(file))
+      throw new Error(`${functionName} function should used as a call expression only`)
+
+    // Check if namespace alias used not to access it's property
+    if (someOfNodeOrChildren(isNamespaceUsedNotAsPropAccess(typeChecker, indexTsPath))(file))
+      throw new Error(`io-ts-transformer namespace alias used not to access it's property`)
 
     // If there is no call of buildDecoder function in the file, don't change it
     if (!someOfNodeOrChildren(isFunctionCallExpression(functionName, indexTsPath)(typeChecker)))
@@ -62,13 +71,6 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
 
     // Replace all buildDecoder function calls with io-ts
     // type entities and remove all index.js imports
-    if (!messageShown) {
-
-      console.log(`[io-ts-transformer info]: if you will get any problems using this transformer, please
-      leave an issue on GitHub https://github.com/awerlogus/io-ts-transformer/issues with your types example`)
-
-      messageShown = true
-    }
 
     return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName, context))
   }
@@ -106,6 +108,124 @@ function mapNodeAndChildren(
   const visitor = (childNode: ts.Node) => mapNodeAndChildren(childNode, program, context, mapper)
 
   return ts.visitEachChild(mapper(node, program), visitor, context)
+}
+
+
+/**
+ * Returns aliased symbol of ts.Symbol or
+ * this symbol itself if it is aliased
+ */
+
+function getAliasedSymbol(symbol: ts.Symbol, typeChecker: ts.TypeChecker): ts.Symbol {
+
+  try {
+    return typeChecker.getAliasedSymbol(symbol)
+  } catch (_) { return symbol }
+}
+
+
+/**
+ * Returns aliased symbol of ts.Identifier
+ */
+
+function getAliasedSymbolOfNode(node: ts.Identifier, typeChecker: ts.TypeChecker): ts.Symbol | undefined {
+
+  const symbol = typeChecker.getSymbolAtLocation(node)
+
+  if (symbol === undefined)
+    return undefined
+
+  return getAliasedSymbol(symbol, typeChecker)
+}
+
+
+/**
+ * Checks is ts.Identifier being an alias of node
+ * with name 'name' declared in the file filePath
+ */
+
+function isAliasIdentifierOf(node: ts.Identifier, typeChecker: ts.TypeChecker, name: string, filePath: string): boolean {
+
+  const aliasSymbol = getAliasedSymbolOfNode(node, typeChecker)
+
+  const declaration = aliasSymbol?.valueDeclaration ?? aliasSymbol?.declarations[0]
+
+  if (declaration === undefined)
+    return false
+
+  return aliasSymbol?.escapedName === name && path.join(declaration.getSourceFile().fileName) === filePath
+}
+
+
+/**
+ * Returns NodePredicate that checks if the node is being
+ * the identifier that refers the function with name
+ * functionName, declared in the file with name filePath,
+ * and this identifier is being used not as a call expression
+ */
+
+function isWrongTransformFunctionUsage(typeChecker: ts.TypeChecker, functionName: string, filePath: string): NodePredicate {
+
+  return node => {
+
+    if (!ts.isIdentifier(node) || ts.isImportSpecifier(node.parent))
+      return false
+
+    if (ts.isCallExpression(node.parent) && !node.parent.arguments.includes(node))
+      return false
+
+    if (!ts.isPropertyAccessExpression(node.parent))
+      return isAliasIdentifierOf(node, typeChecker, functionName, filePath)
+
+    const expression = node.parent.expression
+
+    if (!ts.isIdentifier(expression))
+      return false
+
+    if (isAliasIdentifierOf(expression, typeChecker, functionName, filePath))
+      return true
+
+    const name = node.parent.name
+
+    if (!ts.isIdentifier(name))
+      return false
+
+    if (!isAliasIdentifierOf(name, typeChecker, functionName, filePath))
+      return false
+
+    return !ts.isCallExpression(node.parent.parent) || node.parent.parent.arguments.includes(node.parent)
+  }
+}
+
+
+/**
+ * Returns NodePredicate that checks is node
+ * being the namespace alias of file with name
+ * filePath and it's used not to access it's property
+ */
+
+function isNamespaceUsedNotAsPropAccess(typeChecker: ts.TypeChecker, filePath: string): NodePredicate {
+
+  return node => {
+
+    if (!ts.isIdentifier(node))
+      return false
+
+    if (ts.isPropertyAccessExpression(node.parent))
+      return false
+
+    if (ts.isNamespaceImport(node.parent))
+      return false
+
+    const symbol = getAliasedSymbolOfNode(node, typeChecker)
+
+    const name = symbol?.escapedName.toString()
+
+    if (name === undefined)
+      return false
+
+    return path.join(name.replace('"', '').replace('"', '.d.ts')) === filePath
+  }
 }
 
 
