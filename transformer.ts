@@ -59,15 +59,15 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
     // free name for io-ts alias and replace single index.js import with io-ts import
     const ioTsPriorName = getIoTsAliasName(file)
 
-    const ioTsAliasName = ioTsPriorName ?? findFreeName(file, 'io')
+    const ioTsAliasName = ioTsPriorName ?? findFreeName(isNameFree(file), 'io')
 
     const replacer = getSingleNodeReplacer(
-      isIndexJsImport, getNamespaceImportDeclaration(ioTsAliasName, 'io-ts')
+      isIndexJsImport, createNamespaceImportDeclaration(ioTsAliasName, 'io-ts')
     )
 
-    const file1 = ioTsPriorName === undefined ? ts.visitEachChild(
-      file, node => replacer(node, program), context
-    ) : file
+    const file1 = ioTsPriorName === undefined
+      ? ts.visitEachChild(file, node => replacer(node, program), context)
+      : file
 
     // Replace all buildDecoder function calls with io-ts
     // type entities and remove all index.js imports
@@ -148,12 +148,11 @@ function isAliasIdentifierOf(node: ts.Identifier, typeChecker: ts.TypeChecker, n
 
   const aliasSymbol = getAliasedSymbolOfNode(node, typeChecker)
 
-  const declaration = aliasSymbol?.valueDeclaration ?? aliasSymbol?.declarations[0]
-
-  if (declaration === undefined)
+  if (aliasSymbol === undefined || aliasSymbol.escapedName !== name)
     return false
 
-  return aliasSymbol?.escapedName === name && path.join(declaration.getSourceFile().fileName) === filePath
+  return [aliasSymbol.valueDeclaration, ...aliasSymbol.declarations].filter(Boolean)
+    .some(declaration => path.join(declaration.getSourceFile().fileName) === filePath)
 }
 
 
@@ -219,12 +218,12 @@ function isNamespaceUsedNotAsPropAccess(typeChecker: ts.TypeChecker, filePath: s
 
     const symbol = getAliasedSymbolOfNode(node, typeChecker)
 
-    const name = symbol?.escapedName.toString()
+    const declaration = symbol?.valueDeclaration
 
-    if (name === undefined)
+    if (declaration === undefined || !ts.isSourceFile(declaration))
       return false
 
-    return path.join(name.replace('"', '').replace('"', '.d.ts')) === filePath
+    return path.join(declaration.fileName) === filePath
   }
 }
 
@@ -346,34 +345,81 @@ function isFunctionCallExpression(functionName: string, declarationFilePath: str
  * not exists in passed source file
  */
 
-function isNameFree(file: ts.SourceFile, name: string): boolean {
+function isNameFree(file: ts.SourceFile) {
 
-  return !someOfNodeOrChildren(node =>
-    ts.isIdentifier(node) &&
-    node.getText() === name &&
-    // Object property names may be used for modules
-    !ts.isPropertyAccessExpression(node.parent) &&
-    !ts.isPropertySignature(node.parent) &&
-    !ts.isPropertyAssignment(node.parent)
-  )(file)
+  return (name: string): boolean =>
+
+    !someOfNodeOrChildren(node =>
+      ts.isIdentifier(node) &&
+      node.getText() === name &&
+      // Object property names may be used for modules
+      !ts.isPropertyAccessExpression(node.parent) &&
+      !ts.isPropertySignature(node.parent) &&
+      !ts.isPropertyAssignment(node.parent)
+    )(file)
 }
 
 
 /**
- * Finds free name for new variable
+ * Checks is string consisting only of numbers
  */
 
-function findFreeName(file: ts.SourceFile, template: string): string {
+function isNumberString(string: string): boolean {
 
-  if (isNameFree(file, template))
-    return template
+  return string.match(/^\d+$/) !== null
+}
 
-  // if name is not free, try name0, name1...
+
+/**
+ * Returns last symbol of the string or an
+ * empty string if the string is empty
+ */
+
+function getLastSymbol(string: string): string {
+
+  const { length } = string
+
+  return length !== 0 ? string[length - 1] : ''
+}
+
+
+/**
+ * Finds free name for the new variable.
+ * Using template as a base for the name.
+ * If template contains '@', it will be replaced
+ * with a number, if the name will be not free.
+ * Otherwise number will be added to the end of
+ * template.
+ */
+
+function findFreeName(isNameFree: (name: string) => boolean, template: string): string {
+
+  const defaultName = template
+    .replace('_@_', '_')
+    .replace(/_@$/, '')
+    .replace('@', '')
+
+  if (isNameFree(defaultName))
+    return defaultName
+
+  // Builds name by adding a number to the template
+  const buildName = (index: number): string => {
+
+    if (template.includes('@'))
+      return template.replace('@', index.toString())
+
+    if (isNumberString(getLastSymbol(template)))
+      return template + '_' + index.toString()
+
+    return template + index.toString()
+  }
+
+  // If name is not free, try add a number to it
   const nextIteration = (index: number): string => {
 
-    const name = template + index
+    const name = buildName(index)
 
-    if (isNameFree(file, name))
+    if (isNameFree(name))
       return name
 
     return nextIteration(index + 1)
@@ -412,6 +458,9 @@ function getIoTsAliasName(file: ts.SourceFile): string | undefined {
     .map(getNamespaceImportAliasName)
     .find(Boolean)
 
+  if (name === undefined)
+    return undefined
+
   // if io-ts import is unused in code, it will be
   // removed by compiler and cannot be used by us
   return someOfNodeOrChildren(
@@ -427,7 +476,7 @@ function getIoTsAliasName(file: ts.SourceFile): string | undefined {
  * name namespaceName and alias named AliasName
  */
 
-function getNamespaceImportDeclaration(aliasName: string, namespaceName: string): ts.ImportDeclaration {
+function createNamespaceImportDeclaration(aliasName: string, namespaceName: string): ts.ImportDeclaration {
 
   return ts.createImportDeclaration(
     undefined,
@@ -468,7 +517,7 @@ function getSingleNodeReplacer(predicate: NodePredicate, replacement: ts.Node): 
  * name propertyName of object with name objectName
  */
 
-function getPropertyAccess(objectName: string, propertyName: string): ts.PropertyAccessExpression {
+function createPropertyAccess(objectName: string, propertyName: string): ts.PropertyAccessExpression {
 
   return ts.createPropertyAccess(ts.createIdentifier(objectName), ts.createIdentifier(propertyName))
 }
@@ -480,9 +529,9 @@ function getPropertyAccess(objectName: string, propertyName: string): ts.Propert
  * name objectName and passes params into it
  */
 
-function getMethodCall(objectName: string, methodName: string, params: ts.Expression[]): ts.CallExpression {
+function createMethodCall(objectName: string, methodName: string, params: ts.Expression[]): ts.CallExpression {
 
-  return ts.createCall(getPropertyAccess(objectName, methodName), undefined, params)
+  return ts.createCall(createPropertyAccess(objectName, methodName), undefined, params)
 }
 
 
@@ -492,9 +541,7 @@ function getMethodCall(objectName: string, methodName: string, params: ts.Expres
 
 function isTupleType(type: ts.Type, typeChecker: ts.TypeChecker): type is ts.TupleType {
 
-  const unsafeChecker: any = typeChecker
-
-  return unsafeChecker.isTupleType(type)
+  return (<any>typeChecker).isTupleType(type)
 }
 
 
@@ -504,9 +551,7 @@ function isTupleType(type: ts.Type, typeChecker: ts.TypeChecker): type is ts.Tup
 
 function isArrayType(type: ts.Type, typeChecker: ts.TypeChecker): type is ts.GenericType {
 
-  const unsafeChecker: any = typeChecker
-
-  return unsafeChecker.isArrayType(type)
+  return (<any>typeChecker).isArrayType(type)
 }
 
 
@@ -544,14 +589,14 @@ function isFunctionType(type: ts.Type): boolean {
  * Checks is ts.Type being a type alias
  */
 
-function isNamedType(type: ts.Type): boolean {
+function isTypeAlias(type: ts.Type): boolean {
 
   if (type.isClassOrInterface())
     return true
 
-  const node = type.aliasSymbol?.declarations[0]
+  const nodes = type.aliasSymbol?.declarations
 
-  return node !== undefined && (ts.isTypeAliasDeclaration(node))
+  return nodes !== undefined && nodes.some(ts.isTypeAliasDeclaration)
 }
 
 
@@ -619,7 +664,7 @@ type TransformationData = {
 
 function getTypeId(type: ts.Type): number {
 
-  return (type as any).id
+  return (<any>type).id
 }
 
 
@@ -693,9 +738,7 @@ function mergeTransformationResultArray(array: TransformationResult[]): Transfor
 
 function mergeTypeTransformationResultArray(array: TypeTransformationResult[]): TypeArrayTransformationResult {
 
-  const nodesResult = array.map(res => res.nodeResult)
-
-  return { nodesResult, ...mergeTransformationResultArray(array) }
+  return { nodesResult: array.map(res => res.nodeResult), ...mergeTransformationResultArray(array) }
 }
 
 
@@ -738,12 +781,12 @@ function convertUnionType(
   const nodes = type.aliasSymbol?.declarations
 
   const types = nodes !== undefined && nodes.length !== 0
-    ? (nodes[0] as any).type.types.map(typeChecker.getTypeFromTypeNode)
+    ? (<any>nodes[0]).type.types.map(typeChecker.getTypeFromTypeNode)
     : type.types
 
   const result = convertTypesArray(types, namespace, typeChecker, data)
 
-  const nodeResult = getMethodCall(namespace, 'union', [ts.createArrayLiteral(result.nodesResult)])
+  const nodeResult = createMethodCall(namespace, 'union', [ts.createArrayLiteral(result.nodesResult)])
 
   return { ...result, nodeResult }
 }
@@ -757,9 +800,9 @@ function convertTupleType(
   type: ts.TupleType, namespace: string, typeChecker: ts.TypeChecker, data: TransformationData
 ): TypeTransformationResult {
 
-  const result = convertTypesArray((type as any).resolvedTypeArguments, namespace, typeChecker, data)
+  const result = convertTypesArray((<any>type).resolvedTypeArguments, namespace, typeChecker, data)
 
-  const nodeResult = getMethodCall(namespace, 'tuple', [ts.createArrayLiteral(result.nodesResult)])
+  const nodeResult = createMethodCall(namespace, 'tuple', [ts.createArrayLiteral(result.nodesResult)])
 
   return { ...result, nodeResult }
 }
@@ -782,7 +825,7 @@ function convertArrayType(
 
   const result = convertTypeToIoTs(args[0], namespace, typeChecker, data)
 
-  const nodeResult = getMethodCall(namespace, arrayType, [result.nodeResult])
+  const nodeResult = createMethodCall(namespace, arrayType, [result.nodeResult])
 
   return { ...result, nodeResult }
 }
@@ -803,7 +846,7 @@ function convertRecordType(
 
   const result = convertTypesArray(args, namespace, typeChecker, data)
 
-  const nodeResult = getMethodCall(namespace, 'record', result.nodesResult)
+  const nodeResult = createMethodCall(namespace, 'record', result.nodesResult)
 
   return { ...result, nodeResult }
 }
@@ -845,8 +888,8 @@ function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: 
   const declaration = prop.valueDeclaration
 
   const type = (declaration !== undefined)
-    ? typeChecker.getTypeFromTypeNode((declaration as any).type)
-    : (prop as any).type
+    ? typeChecker.getTypeFromTypeNode((<any>declaration).type)
+    : (<any>prop).type
 
   const name = String(prop.escapedName)
 
@@ -862,12 +905,35 @@ function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: 
 
 function buildPropertyName(name: string): string | ts.StringLiteral {
 
-  if (name.match(/(\d*\w_)+/))
-    return ts.createStringLiteral(name)
+  if (name.match(/^[a-zA-Z_]+[\w_]+$/) !== null)
+    return name
 
-  return name
+  return ts.createStringLiteral(name)
 }
 
+
+/**
+ * Separates an array into two arrays:
+ * the first array contains elements matched
+ * by predicate as true, the second as false.
+ */
+function separateArray<T>(array: T[], predicate: (element: T) => boolean): [T[], T[]] {
+
+  const nextIteration = (array: T[], onTrue: T[], onFalse: T[]): [T[], T[]] => {
+
+    if (array.length === 0)
+      return [onTrue, onFalse]
+
+    const [head, ...tail] = array
+
+    if (predicate(head))
+      return nextIteration(tail, [...onTrue, head], onFalse)
+
+    return nextIteration(tail, onTrue, [...onFalse, head])
+  }
+
+  return nextIteration(array, [], [])
+}
 
 /**
  * Converts Array of object properties to io-ts TransformationResult. If there are
@@ -880,7 +946,7 @@ function convertObjectType(
 ): TypeTransformationResult {
 
   if (props.length === 0)
-    return wrapToTypeTransformationResult(getMethodCall(namespace, 'type', [ts.createObjectLiteral([])]))
+    return wrapToTypeTransformationResult(createMethodCall(namespace, 'type', [ts.createObjectLiteral([])]))
 
   const preparedProps = props.map(prop => {
 
@@ -894,32 +960,11 @@ function convertObjectType(
   // and get four property lists
   // for each criteria combination
 
-  const readonlyProps: Array<ts.Symbol> = []
-  const editableProps: Array<ts.Symbol> = []
+  const [readonlyProps, editableProps] = separateArray(preparedProps, isReadonlyPropertyDeclaration)
 
-  preparedProps.forEach(prop => {
-    if (isReadonlyPropertyDeclaration(prop))
-      readonlyProps.push(prop)
-    else editableProps.push(prop)
-  })
+  const [readonlyOptionalProps, readonlyNonOptionalProps] = separateArray(readonlyProps, isOptionalPropertyDeclaration)
 
-  const readonlyOptionalProps: Array<ts.Symbol> = []
-  const readonlyNonOptionalProps: Array<ts.Symbol> = []
-
-  readonlyProps.forEach(prop => {
-    if (isOptionalPropertyDeclaration(prop))
-      readonlyOptionalProps.push(prop)
-    else readonlyNonOptionalProps.push(prop)
-  })
-
-  const editableOptionalProps: Array<ts.Symbol> = []
-  const editableNonOptionalProps: Array<ts.Symbol> = []
-
-  editableProps.forEach(prop => {
-    if (isOptionalPropertyDeclaration(prop))
-      editableOptionalProps.push(prop)
-    else editableNonOptionalProps.push(prop)
-  })
+  const [editableOptionalProps, editableNonOptionalProps] = separateArray(editableProps, isOptionalPropertyDeclaration)
 
   // Builds io-ts t.type (or t.partial) entity by property list
   const handlePropList = (props: ts.Symbol[], isPartial: boolean, data: TransformationData) => {
@@ -936,7 +981,7 @@ function convertObjectType(
 
     const objectType = isPartial ? 'partial' : 'type'
 
-    const nodeResult = getMethodCall(namespace, objectType, [ts.createObjectLiteral(properties)])
+    const nodeResult = createMethodCall(namespace, objectType, [ts.createObjectLiteral(properties)])
 
     return { ...result, nodeResult }
   }
@@ -950,7 +995,7 @@ function convertObjectType(
 
     const res = handlePropList(props, isPartial, data)
 
-    const nodeResult = getMethodCall(namespace, 'readonly', [res.nodeResult])
+    const nodeResult = createMethodCall(namespace, 'readonly', [res.nodeResult])
 
     return { ...res, nodeResult }
   }
@@ -997,7 +1042,7 @@ function convertObjectType(
 
   const nodeResult = result.length === 1
     ? result[0].nodeResult
-    : getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(merged.nodesResult)])
+    : createMethodCall(namespace, 'intersection', [ts.createArrayLiteral(merged.nodesResult)])
 
   return { ...merged, nodeResult }
 }
@@ -1032,7 +1077,7 @@ function convertInterfaceType(
 
   const nodesArray = [object.nodeResult, ...parentsTransformed.nodesResult]
 
-  const nodeResult = getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(nodesArray)])
+  const nodeResult = createMethodCall(namespace, 'intersection', [ts.createArrayLiteral(nodesArray)])
 
   return { nodeResult, ...mergeTransformationResultArray([object, parentsTransformed]) }
 }
@@ -1052,9 +1097,9 @@ function wrapToTypeTransformationResult(node: ts.Expression): TypeTransformation
  * Builds TransformationResult for literal cases
  */
 
-function getLiteralTransformationResult(namespace: string, literal: ts.Expression): TypeTransformationResult {
+function createLiteralTransformationResult(namespace: string, literal: ts.Expression): TypeTransformationResult {
 
-  return wrapToTypeTransformationResult(getMethodCall(namespace, 'literal', [literal]))
+  return wrapToTypeTransformationResult(createMethodCall(namespace, 'literal', [literal]))
 }
 
 
@@ -1062,9 +1107,9 @@ function getLiteralTransformationResult(namespace: string, literal: ts.Expressio
  * Builds TransformationResult for basic type cases
  */
 
-function getBasicTypeTransformationResult(namespace: string, typeName: string): TypeTransformationResult {
+function createBasicTypeTransformationResult(namespace: string, typeName: string): TypeTransformationResult {
 
-  return wrapToTypeTransformationResult(getPropertyAccess(namespace, typeName))
+  return wrapToTypeTransformationResult(createPropertyAccess(namespace, typeName))
 }
 
 
@@ -1087,31 +1132,31 @@ function convertTypeToIoTs(
 
   // Basic types transformation
   if (['null', 'undefined', 'void', 'unknown'].includes(stringType))
-    return getBasicTypeTransformationResult(namespace, stringType)
+    return createBasicTypeTransformationResult(namespace, stringType)
 
   if (stringType === 'true' || stringType === 'false') {
 
     const literal = stringType === 'true' ? ts.createTrue() : ts.createFalse()
 
-    return getLiteralTransformationResult(namespace, literal)
+    return createLiteralTransformationResult(namespace, literal)
   }
 
   if (type.isStringLiteral())
-    return getLiteralTransformationResult(namespace, ts.createStringLiteral(type.value))
+    return createLiteralTransformationResult(namespace, ts.createStringLiteral(type.value))
 
   if (type.isNumberLiteral())
-    return getLiteralTransformationResult(namespace, ts.createNumericLiteral(type.value.toString()))
+    return createLiteralTransformationResult(namespace, ts.createNumericLiteral(type.value.toString()))
 
   if (['string', 'number', 'boolean'].includes(stringType))
-    return getBasicTypeTransformationResult(namespace, stringType)
+    return createBasicTypeTransformationResult(namespace, stringType)
 
   if (isFunctionType(type))
-    return getBasicTypeTransformationResult(namespace, 'function')
+    return createBasicTypeTransformationResult(namespace, 'function')
 
   // Checking is the type already computed
   const typeId = getTypeId(type)
 
-  const isNamed = isNamedType(type)
+  const isNamed = isTypeAlias(type)
 
   if (isNamed && data.computed.includes(typeId))
     return {
@@ -1147,7 +1192,7 @@ function convertTypeToIoTs(
   else if (isObjectType(type))
     result = convertObjectType(type.getProperties(), namespace, typeChecker, newData)
 
-  else result = getBasicTypeTransformationResult(namespace, 'void')
+  else result = createBasicTypeTransformationResult(namespace, 'void')
 
   // Check if we need to enrich aliases property with this type
   const nodeResult = isNamed ? ts.createIdentifier(generateNodeName(typeId)) : result.nodeResult
@@ -1181,7 +1226,7 @@ function createConstant(name: string, value: ts.Expression): ts.VariableStatemen
  * Creates arrow function without of arguments and with body passed
  */
 
-function getSimpleArrowFunction(body: ts.Expression | ts.Block): ts.ArrowFunction {
+function createSimpleArrowFunction(body: ts.Expression | ts.Block): ts.ArrowFunction {
 
   return ts.createArrowFunction(
     undefined, undefined, [], undefined,
@@ -1195,11 +1240,11 @@ function getSimpleArrowFunction(body: ts.Expression | ts.Block): ts.ArrowFunctio
  * Wraps ts.Expression into t.recursion
  */
 
-function getRecursiveTypeModel(namespace: string, name: string, model: ts.Expression): ts.VariableStatement {
+function createRecursiveTypeModel(namespace: string, name: string, model: ts.Expression): ts.VariableStatement {
 
-  const recursion = getMethodCall(namespace, 'recursion', [
+  const recursion = createMethodCall(namespace, 'recursion', [
     ts.createStringLiteral(name),
-    getSimpleArrowFunction(model)
+    createSimpleArrowFunction(model)
   ])
 
   return createConstant(name, recursion)
@@ -1319,7 +1364,7 @@ function addNestedIntersectionsOptimization(
         Array.isArray(element) ? [...acc, ...element] : [...acc, element], []
     )
 
-    return getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(elements)])
+    return createMethodCall(namespace, 'intersection', [ts.createArrayLiteral(elements)])
   }
 
   aliasKeys.forEach(key => transformed[key] = mapNodeAndChildren(data.aliases[key], program, context, mappingFunction) as ts.Expression)
@@ -1388,9 +1433,9 @@ function addMergingIntersectionElementsOptimization(
 
     const result = otherNodes.length !== 0 ? [...otherNodes] : []
 
-    const createReadonly = (object: ts.Expression) => getMethodCall(namespace, 'readonly', [object])
-    const createPartial = (object: ts.Expression) => getMethodCall(namespace, 'partial', [object])
-    const createType = (object: ts.Expression) => getMethodCall(namespace, 'type', [object])
+    const createReadonly = (object: ts.Expression) => createMethodCall(namespace, 'readonly', [object])
+    const createPartial = (object: ts.Expression) => createMethodCall(namespace, 'partial', [object])
+    const createType = (object: ts.Expression) => createMethodCall(namespace, 'type', [object])
 
     if (readonlyPartial.length !== 0)
       result.push(createReadonly(createPartial(ts.createObjectLiteral(readonlyPartial))))
@@ -1410,7 +1455,7 @@ function addMergingIntersectionElementsOptimization(
     if (result.length === 1)
       return result[0]
 
-    return getMethodCall(namespace, 'intersection', [ts.createArrayLiteral(result as any)])
+    return createMethodCall(namespace, 'intersection', [ts.createArrayLiteral(result as any)])
   }
 
   aliasKeys.forEach(key => transformed[key] = mapNodeAndChildren(data.aliases[key], program, context, mappingFunction) as ts.Expression)
@@ -1440,18 +1485,10 @@ function addPostOptimizations(
 
 
 /**
- * Converts ts.Type entity to io-ts type entity
+ * Builds io-ts model by TypeTransformationResult
  */
 
-function convertTypeToIoTsType(
-  type: ts.Type, namespace: string, typeChecker: ts.TypeChecker, program: ts.Program, context: ts.TransformationContext
-): ts.Expression {
-
-  const initialData: TransformationData = { computed: [], stack: [] }
-
-  const data = convertTypeToIoTs(type, namespace, typeChecker, initialData)
-
-  const result = addPostOptimizations(data, program, context)
+function buildIoTsModeByTypeResult(result: TypeTransformationResult, namespace: string): ts.Expression {
 
   const { aliases, nodeResult } = result
 
@@ -1462,13 +1499,31 @@ function convertTypeToIoTsType(
 
   const constants = ids.map(
     id => result.recursions.includes(id)
-      ? getRecursiveTypeModel(namespace, generateNodeName(id), aliases[id])
+      ? createRecursiveTypeModel(namespace, generateNodeName(id), aliases[id])
       : createConstant(generateNodeName(id), aliases[id])
   )
 
   const iifeBlock = ts.createBlock([...constants, ts.createReturn(nodeResult)], true)
 
-  return ts.createCall(ts.createParen(getSimpleArrowFunction(iifeBlock)), undefined, [])
+  return ts.createCall(ts.createParen(createSimpleArrowFunction(iifeBlock)), undefined, [])
+}
+
+
+/**
+ * Converts ts.Type entity to io-ts type entity
+ */
+
+function convertTypeToIoTsType(
+  type: ts.Type, namespace: string, typeChecker: ts.TypeChecker, program: ts.Program, context: ts.TransformationContext
+): ts.Expression {
+
+  const initialData: TransformationData = { computed: [], stack: [] }
+
+  const result = convertTypeToIoTs(type, namespace, typeChecker, initialData)
+
+  const optimizedResult = addPostOptimizations(result, program, context)
+
+  return buildIoTsModeByTypeResult(optimizedResult, namespace)
 }
 
 
