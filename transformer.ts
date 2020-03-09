@@ -75,7 +75,7 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
 
     // Find all FromIoTs type usages and map it's type ids to referenced constant names.
     // Also check it's used only with 'typeof' keyword and throw error otherwise.
-    const fromIoTsUsages = findFromIoTsUsages(file1, typeChecker)
+    const fromIoTsUsages = findFromIoTsUsages(file, typeChecker)
 
     // Replace all buildDecoder function calls with io-ts
     // type entities and remove all index.js imports
@@ -954,7 +954,7 @@ function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: 
 
   const type = (<any>prop).type === undefined
     ? typeChecker.getTypeFromTypeNode((<any>declaration).type)
-    : (<any>prop).type.target
+    : (<any>prop).type.target ?? (<any>prop).type
 
   const name = String(prop.escapedName)
 
