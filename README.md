@@ -80,6 +80,54 @@ import * as t from 'io-ts'
 t.type({ foo: t.literal('bar'), data: t.string })
 ```
 
+3) Inject existing io-ts models into a TypeScript type. You can use `FromIoTs` type provided by io-ts-transformer to specify variables to inject. Then io-ts models, built by io-ts-transformer, will reference the variables passed.
+
+```TypeScript
+import { withFallback } from 'io-ts-types/lib/withFallback'
+import { buildDecoder, FromIoTs } from 'io-ts-transformer'
+import * as t from 'io-ts'
+
+const options = t.type({
+  logLevel: withFallback(t.string, 'info')
+})
+
+type Config = {
+  folder: string
+  options: FromIoTs<typeof options>
+}
+
+// const config = t.type({ folder: t.string, options: options })
+const config = buildDecoder<Config>()
+```
+
+Don't forget wrapping your models in `t.recursion`, if you use `buildDecoder` inside them, and the type passed includes `FromIoTs` recursive reference to this model. For example, this code will produce a runtime error:
+
+```TypeScript
+import { buildDecoder, FromIoTs } from 'io-ts-transformer'
+import * as t from 'io-ts'
+
+const foo = t.type({ bar: buildDecoder<T>() })
+
+type T = { foo?: FromIoTs<typeof foo> }
+
+// Will produce a runtime error
+const decodeResult = foo.decode({ bar: {} })
+```
+
+To avoid this you should wrap `foo` model in `t.recursion`:
+
+```TypeScript
+import { buildDecoder, FromIoTs } from 'io-ts-transformer'
+import * as t from 'io-ts'
+
+const foo = t.recursion('foo', () => t.type({ bar: buildDecoder<T>() }))
+
+type T = { foo?: FromIoTs<typeof foo> }
+
+// Now it will work as intended
+const decodeResult = foo.decode({ bar: {} })
+```
+
 Io-ts-transformer can't do
 ---
 
@@ -93,8 +141,6 @@ function convertEntity<T>(entity: T) {
   return buildDecoder<T>()
 }
 ```
-
-3) Emulate `t.Int` and `t.exact` io-ts entities on type level.
 
 # How to use `buildDecoder`
 

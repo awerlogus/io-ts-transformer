@@ -4,8 +4,9 @@ import * as path from 'path'
 
 // Settings
 
-// Name of the transforming function
-const functionName = 'buildDecoder'
+// Name of the index.d.ts entities
+const decoderFunctionName = 'buildDecoder'
+const fromIoTsTypeName = 'FromIoTs'
 
 // io-ts import paths
 const ioTsPaths = [
@@ -44,15 +45,15 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
     const typeChecker = program.getTypeChecker()
 
     // Check if buildDecoder function is used not as a call expression
-    if (someOfNodeOrChildren(isWrongTransformFunctionUsage(typeChecker, functionName, indexTsPath))(file))
-      throw new Error(`${functionName} function should used as a call expression only`)
+    if (someOfNodeOrChildren(isWrongTransformFunctionUsage(typeChecker, decoderFunctionName, indexTsPath))(file))
+      throw new Error(`${decoderFunctionName} function should used as a call expression only`)
 
     // Check if namespace alias used not to access it's property
     if (someOfNodeOrChildren(isNamespaceUsedNotAsPropAccess(typeChecker, indexTsPath))(file))
       throw new Error(`io-ts-transformer namespace alias used not to access it's property`)
 
     // If there is no call of buildDecoder function in the file, don't change it
-    if (!someOfNodeOrChildren(isFunctionCallExpression(functionName, indexTsPath)(typeChecker)))
+    if (!someOfNodeOrChildren(isFunctionCallExpression(decoderFunctionName, indexTsPath)(typeChecker)))
       return file
 
     // If io-ts namespace is already imported, find its alias name. Otherwise find
@@ -61,18 +62,24 @@ export default function transform(program: ts.Program): ts.TransformerFactory<ts
 
     const ioTsAliasName = ioTsPriorName ?? findFreeName(isNameFree(file), 'io')
 
-    const replacer = getSingleNodeReplacer(
-      isIndexJsImport, createNamespaceImportDeclaration(ioTsAliasName, 'io-ts')
-    )
+    const replaceIndexNode = () => {
 
-    const file1 = ioTsPriorName === undefined
-      ? ts.visitEachChild(file, node => replacer(node, program), context)
-      : file
+      const replacer = getSingleNodeReplacer(
+        isIndexJsImport, createNamespaceImportDeclaration(ioTsAliasName, 'io-ts')
+      )
+
+      return ts.visitEachChild(file, node => replacer(node, program), context)
+    }
+
+    const file1 = ioTsPriorName === undefined ? replaceIndexNode() : file
+
+    // Find all FromIoTs type usages and map it's type ids to referenced constant names.
+    // Also check it's used only with 'typeof' keyword and throw error otherwise.
+    const fromIoTsUsages = findFromIoTsUsages(file1, typeChecker)
 
     // Replace all buildDecoder function calls with io-ts
     // type entities and remove all index.js imports
-
-    return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName, context))
+    return mapNodeAndChildren(file1, program, context, getNodeVisitor(ioTsAliasName, fromIoTsUsages, context))
   }
 }
 
@@ -140,19 +147,30 @@ function getAliasedSymbolOfNode(node: ts.Identifier, typeChecker: ts.TypeChecker
 
 
 /**
+ * Checks is symbol belongs to declaration
+ * with name 'name' located in file filePath
+ */
+
+function isSymbolOf(symbol: ts.Symbol, name: string, filePath: string): boolean {
+
+  if (symbol.escapedName !== name)
+    return false
+
+  return [symbol.valueDeclaration, ...symbol.declarations].filter(Boolean)
+    .some(declaration => path.join(declaration.getSourceFile().fileName) === filePath)
+}
+
+
+/**
  * Checks is ts.Identifier being an alias of node
  * with name 'name' declared in the file filePath
  */
 
 function isAliasIdentifierOf(node: ts.Identifier, typeChecker: ts.TypeChecker, name: string, filePath: string): boolean {
 
-  const aliasSymbol = getAliasedSymbolOfNode(node, typeChecker)
+  const symbol = getAliasedSymbolOfNode(node, typeChecker)
 
-  if (aliasSymbol === undefined || aliasSymbol.escapedName !== name)
-    return false
-
-  return [aliasSymbol.valueDeclaration, ...aliasSymbol.declarations].filter(Boolean)
-    .some(declaration => path.join(declaration.getSourceFile().fileName) === filePath)
+  return symbol !== undefined && isSymbolOf(symbol, name, filePath)
 }
 
 
@@ -210,7 +228,7 @@ function isNamespaceUsedNotAsPropAccess(typeChecker: ts.TypeChecker, filePath: s
     if (!ts.isIdentifier(node))
       return false
 
-    if (ts.isPropertyAccessExpression(node.parent))
+    if (ts.isPropertyAccessOrQualifiedName(node.parent))
       return false
 
     if (ts.isNamespaceImport(node.parent))
@@ -225,6 +243,52 @@ function isNamespaceUsedNotAsPropAccess(typeChecker: ts.TypeChecker, filePath: s
 
     return path.join(declaration.fileName) === filePath
   }
+}
+
+
+/**
+ * Finds all FromIoTs usages in the file
+ * and returns a record of type ids and
+ * expressions that types to be replaced
+ */
+
+function findFromIoTsUsages(file: ts.SourceFile, typeChecker: ts.TypeChecker): Record<number, string> {
+
+  const handleNode = (node: ts.Identifier): Record<number, string> => {
+
+    if (ts.isImportSpecifier(node.parent))
+      return {}
+
+    const symbol = getAliasedSymbolOfNode(node, typeChecker)
+
+    if (symbol === undefined || !isSymbolOf(symbol, fromIoTsTypeName, indexTsPath))
+      return {}
+
+    const parent = ts.isPropertyAccessOrQualifiedName(node.parent) ? node.parent.parent : node.parent
+
+    const args = (<any>parent).typeArguments[0]._children
+
+    if (args[0].kind !== ts.SyntaxKind.TypeOfKeyword)
+      throw new Error(`${fromIoTsTypeName} type must be used with 'typeof' parameter only`)
+
+    if (!ts.isIdentifier(args[1]))
+      throw new Error(`${fromIoTsTypeName} type can accept typeof identifier only`)
+
+    const type = typeChecker.getTypeFromTypeNode(<any>parent)
+
+    return { [getTypeId(type)]: String(args[1].escapedText) }
+  }
+
+  const visitor = (node: ts.Node): Record<number, string> => {
+
+    const nodeResult = ts.isIdentifier(node) ? handleNode(node) : {}
+
+    const childrenResult = node.getChildren().map(visitor)
+
+    return [nodeResult, ...childrenResult].reduce(mergeObjects)
+  }
+
+  return visitor(file)
 }
 
 
@@ -350,12 +414,12 @@ function isNameFree(file: ts.SourceFile) {
   return (name: string): boolean =>
 
     !someOfNodeOrChildren(node =>
-      ts.isIdentifier(node) &&
-      node.getText() === name &&
+      ts.isIdentifier(node)
+      && node.getText() === name
       // Object property names may be used for modules
-      !ts.isPropertyAccessExpression(node.parent) &&
-      !ts.isPropertySignature(node.parent) &&
-      !ts.isPropertyAssignment(node.parent)
+      && !ts.isPropertyAccessExpression(node.parent)
+      && !ts.isPropertySignature(node.parent)
+      && !ts.isPropertyAssignment(node.parent)
     )(file)
 }
 
@@ -464,9 +528,9 @@ function getIoTsAliasName(file: ts.SourceFile): string | undefined {
   // if io-ts import is unused in code, it will be
   // removed by compiler and cannot be used by us
   return someOfNodeOrChildren(
-    node => ts.isIdentifier(node) &&
-      !ts.isNamespaceImport(node.parent) &&
-      node.getText() === name
+    node => ts.isIdentifier(node)
+      && !ts.isNamespaceImport(node.parent)
+      && node.getText() === name
   )(file) ? name : undefined
 }
 
@@ -655,6 +719,7 @@ type TypeArrayTransformationResult<T extends ts.Expression = ts.Expression> =
 type TransformationData = {
   stack: number[]
   computed: number[]
+  fromIoTsUsages: Record<number, string>
 }
 
 
@@ -887,9 +952,9 @@ function extractProperty(prop: ts.Symbol, typeChecker: ts.TypeChecker): { name: 
 
   const declaration = prop.valueDeclaration
 
-  const type = (declaration !== undefined)
+  const type = (<any>prop).type === undefined
     ? typeChecker.getTypeFromTypeNode((<any>declaration).type)
-    : (<any>prop).type
+    : (<any>prop).type.target
 
   const name = String(prop.escapedName)
 
@@ -1130,6 +1195,14 @@ function convertTypeToIoTs(
   if (type.isClass())
     throw new Error('Transformation of classes is not supported')
 
+  // Check is FromIoTs expression
+  const typeId = getTypeId(type)
+
+  const fromIoTs = data.fromIoTsUsages[typeId]
+
+  if (fromIoTs !== undefined)
+    return wrapToTypeTransformationResult(ts.createIdentifier(fromIoTs))
+
   // Basic types transformation
   if (['null', 'undefined', 'void', 'unknown'].includes(stringType))
     return createBasicTypeTransformationResult(namespace, stringType)
@@ -1154,13 +1227,11 @@ function convertTypeToIoTs(
     return createBasicTypeTransformationResult(namespace, 'function')
 
   // Checking is the type already computed
-  const typeId = getTypeId(type)
-
   const isNamed = isTypeAlias(type)
 
   if (isNamed && data.computed.includes(typeId))
     return {
-      nodeResult: ts.createIdentifier(generateNodeName(typeId)),
+      nodeResult: ts.createIdentifier(generateNodeName(typeId, Object.values(data.fromIoTsUsages))),
       aliases: {},
       nodesCount: { [typeId]: 1 },
       recursions: data.stack.includes(typeId) ? data.stack.slice(data.stack.indexOf(typeId)) : []
@@ -1168,6 +1239,7 @@ function convertTypeToIoTs(
 
   // Complex types transformation
   const newData: TransformationData = {
+    ...data,
     computed: mergeArrays(data.computed, [typeId]),
     stack: [...data.stack, typeId]
   }
@@ -1195,7 +1267,9 @@ function convertTypeToIoTs(
   else result = createBasicTypeTransformationResult(namespace, 'void')
 
   // Check if we need to enrich aliases property with this type
-  const nodeResult = isNamed ? ts.createIdentifier(generateNodeName(typeId)) : result.nodeResult
+  const nodeResult = isNamed
+    ? ts.createIdentifier(generateNodeName(typeId, Object.values(data.fromIoTsUsages)))
+    : result.nodeResult
 
   const newAlias = isNamed ? { [typeId]: result.nodeResult } : {}
 
@@ -1255,9 +1329,9 @@ function createRecursiveTypeModel(namespace: string, name: string, model: ts.Exp
  * Generates name for node constant by its id
  */
 
-function generateNodeName(id: number): string {
+function generateNodeName(id: number, occupiedNames: string[]): string {
 
-  return `node${id}`
+  return findFreeName(name => !occupiedNames.includes(name), `node${id}_@`)
 }
 
 
@@ -1269,7 +1343,7 @@ function getTypeConstantId(constant: ts.Identifier): number {
 
   const name = constant.text
 
-  return parseInt(name.replace('node', ''))
+  return parseInt(name.split('_')[0].replace('node', ''))
 }
 
 
@@ -1488,7 +1562,9 @@ function addPostOptimizations(
  * Builds io-ts model by TypeTransformationResult
  */
 
-function buildIoTsModeByTypeResult(result: TypeTransformationResult, namespace: string): ts.Expression {
+function buildIoTsModeByTypeResult(
+  result: TypeTransformationResult, namespace: string, occupiedNames: string[]
+): ts.Expression {
 
   const { aliases, nodeResult } = result
 
@@ -1499,8 +1575,8 @@ function buildIoTsModeByTypeResult(result: TypeTransformationResult, namespace: 
 
   const constants = ids.map(
     id => result.recursions.includes(id)
-      ? createRecursiveTypeModel(namespace, generateNodeName(id), aliases[id])
-      : createConstant(generateNodeName(id), aliases[id])
+      ? createRecursiveTypeModel(namespace, generateNodeName(id, occupiedNames), aliases[id])
+      : createConstant(generateNodeName(id, occupiedNames), aliases[id])
   )
 
   const iifeBlock = ts.createBlock([...constants, ts.createReturn(nodeResult)], true)
@@ -1514,16 +1590,40 @@ function buildIoTsModeByTypeResult(result: TypeTransformationResult, namespace: 
  */
 
 function convertTypeToIoTsType(
-  type: ts.Type, namespace: string, typeChecker: ts.TypeChecker, program: ts.Program, context: ts.TransformationContext
+  type: ts.Type,
+  namespace: string,
+  fromIoTsUsages: Record<number, string>,
+  typeChecker: ts.TypeChecker,
+  program: ts.Program,
+  context: ts.TransformationContext
 ): ts.Expression {
 
-  const initialData: TransformationData = { computed: [], stack: [] }
+  const initialData: TransformationData = { computed: [], stack: [], fromIoTsUsages }
 
   const result = convertTypeToIoTs(type, namespace, typeChecker, initialData)
 
   const optimizedResult = addPostOptimizations(result, program, context)
 
-  return buildIoTsModeByTypeResult(optimizedResult, namespace)
+  return buildIoTsModeByTypeResult(optimizedResult, namespace, Object.values(fromIoTsUsages))
+}
+
+
+/**
+ * Removes from usages names of constants in the node stack
+ */
+
+function normalizeFromIoTsUsages(usages: Record<number, string>, node: ts.Node): Record<number, string> {
+
+  if (ts.isSourceFile(node) || !ts.isVariableDeclaration(node.parent))
+    return usages
+
+  const copy = { ...usages }
+
+  const keys = getObjectNumberKeys(copy)
+
+  keys.forEach(key => copy[key] === ((<any>node).parent.name).escapedText && delete copy[key])
+
+  return copy
 }
 
 
@@ -1532,9 +1632,13 @@ function convertTypeToIoTsType(
  * buildDecoder function call with io-ts type entity
  */
 
-function getNodeVisitor(ioTsInstanceName: string, context: ts.TransformationContext): MappingFunction
+function getNodeVisitor(
+  ioTsInstanceName: string, fromIoTsUsages: Record<number, string>, context: ts.TransformationContext
+): MappingFunction
 
-function getNodeVisitor(ioTsInstanceName: string, context: ts.TransformationContext) {
+function getNodeVisitor(
+  ioTsInstanceName: string, fromIoTsUsages: Record<number, string>, context: ts.TransformationContext
+) {
 
   return (node: ts.Node, program: ts.Program) => {
 
@@ -1543,16 +1647,18 @@ function getNodeVisitor(ioTsInstanceName: string, context: ts.TransformationCont
 
     const typeChecker = program.getTypeChecker()
 
-    if (!isFunctionCallExpression(functionName, indexTsPath)(typeChecker)(node))
+    if (!isFunctionCallExpression(decoderFunctionName, indexTsPath)(typeChecker)(node))
       return node
 
     const typeArguments = node.typeArguments
 
     if (typeArguments === undefined || typeArguments.length === 0)
-      throw new Error(`Please pass a type argument to the ${functionName} function`)
+      throw new Error(`Please pass a type argument to the ${decoderFunctionName} function`)
 
     const type = typeChecker.getTypeFromTypeNode(typeArguments[0])
 
-    return convertTypeToIoTsType(type, ioTsInstanceName, typeChecker, program, context)
+    const usages = normalizeFromIoTsUsages(fromIoTsUsages, node)
+
+    return convertTypeToIoTsType(type, ioTsInstanceName, usages, typeChecker, program, context)
   }
 }
