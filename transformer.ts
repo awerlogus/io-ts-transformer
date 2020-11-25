@@ -845,7 +845,7 @@ function convertUnionType(
 
   const nodes = type.aliasSymbol?.declarations
 
-  const types = nodes !== undefined && nodes.length !== 0
+  const types = nodes !== undefined && nodes.length !== 0 && nodes[0].type !== undefined
     ? (<any>nodes[0]).type.types.map(typeChecker.getTypeFromTypeNode)
     : type.types
 
