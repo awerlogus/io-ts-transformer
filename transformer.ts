@@ -349,7 +349,18 @@ function getImportNodeRealPath(node: ts.ImportDeclaration): string {
     ? path.resolve(path.dirname(node.getSourceFile().fileName), module)
     : module
 
-  return require.resolve(nodePath)
+  try {
+    return require.resolve(nodePath)
+  } catch(e) {
+    // in some cases it fails to resolve modules unless their file extension is included.
+    for (const extension of ['ts', 'tsx']) {
+        try {
+            return require.resolve(`${nodePath}.${extension}`)
+        } catch(e) { }
+    }
+    //if none of the extensions worked
+    throw e
+  }
 }
 
 
