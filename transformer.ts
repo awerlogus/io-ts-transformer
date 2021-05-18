@@ -1,5 +1,6 @@
 import * as ts from 'typescript'
 import * as path from 'path'
+import * as resolve from 'resolve'
 
 
 // Settings
@@ -352,14 +353,8 @@ function getImportNodeRealPath(node: ts.ImportDeclaration): string {
   try {
     return require.resolve(nodePath)
   } catch(e) {
-    // in some cases it fails to resolve modules unless their file extension is included.
-    for (const extension of ['ts', 'tsx']) {
-        try {
-            return require.resolve(`${nodePath}.${extension}`)
-        } catch(e) { }
-    }
-    //if none of the extensions worked
-    throw e
+    // attempt to resolve file path with typescript extensions
+    return resolve.sync(nodePath, {extensions: ['.ts', '.tsx']})
   }
 }
 
